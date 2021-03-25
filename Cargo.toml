@@ -1,7 +1,7 @@
 [package]
 name = "usb-audio"
 version = "0.1.0"
-authors = ["Albert Moravec <albert.moravec@gmail.com>"]
+authors = ["Henrik Alsér <henrik.alser@me.com>"]
 edition = "2018"
 
 [dependencies]

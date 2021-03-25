@@ -2,7 +2,7 @@
 use usb_device::class_prelude::*;
 use usb_device::Result;
 
-// const FEATURE_UNIT_ID: u8 = 0x16;
+const FEATURE_UNIT_ID: u8 = 0x16;
 const INPUT_TERMINAL_ID: u8 = 0x01;
 const OUTPUT_TERMINAL_ID: u8 = 0x02;
 
@@ -36,9 +36,10 @@ pub struct AudioClass<'a, B: UsbBus> {
     control_if: InterfaceNumber,
     play_data_if: InterfaceNumber,
     play_data_ep: EndpointOut<'a, B>, // feature_unit: FeatureUnit,
-    // audio_buffer: AudioBuffer,
-    // sample_buffer: [u8; BUFFER_SIZE],
-    // write_pos: usize,
+    feedback_ep: EndpointIn<'a, B>,   // feature_unit: FeatureUnit,
+                                      // audio_buffer: AudioBuffer,
+                                      // sample_buffer: [u8; BUFFER_SIZE],
+                                      // write_pos: usize,
 }
 
 // struct FeatureUnit {
@@ -60,15 +61,28 @@ impl<B: UsbBus> AudioClass<'_, B> {
         AudioClass {
             control_if: alloc.interface(),
             play_data_if: alloc.interface(),
-            play_data_ep: alloc.isochronous(MAX_PACKET_SIZE as u16, true), // feature_unit: FeatureUnit::new(false, DEFAULT_VOLUME),
-            // audio_buffer: AudioBuffer::new(),
-            // sample_buffer: [0; BUFFER_SIZE],
-            // write_pos: 0,
+            play_data_ep: alloc.isochronous_with_sync(MAX_PACKET_SIZE as u16, true, 129), // feature_unit: FeatureUnit::new(false, DEFAULT_VOLUME),
+            feedback_ep: alloc
+                .alloc(
+                    Some(EndpointAddress::from(129)),
+                    EndpointType::Isochronous,
+                    3,
+                    1,
+                    false,
+                )
+                .unwrap(), // feature_unit: FeatureUnit::new(false, DEFAULT_VOLUME),
+                                                                                          // audio_buffer: AudioBuffer::new(),
+                                                                                          // sample_buffer: [0; BUFFER_SIZE],
+                                                                                          // write_pos: 0,
         }
     }
 
     pub fn read_data(&self, buf: &mut [u8]) -> Result<usize> {
         self.play_data_ep.read(buf)
+    }
+
+    pub fn write_feedback(&self, buf: &mut [u8]) -> Result<usize> {
+        self.feedback_ep.write(buf)
     }
 
     // pub fn audio_buffer(&mut self) -> &mut AudioBuffer {
@@ -195,16 +209,16 @@ where
 
         // USB Play control feature
         // Feature Unit Descriptor
-        // let feature_unit = &[
-        //     0x06,            // bDescriptorSubtype - Feature unit
-        //     FEATURE_UNIT_ID, // bUnitID - unique identifier
-        //     0x12,            // bSourceID - ID of terminal associated with this feature unit
-        //     0x01, // bControlSize - bmaControls member size in bytes (size of one bmaControls map)
-        //     0x01 | 0x02, // bmaControls(0) - volume and mute (on master channel)
-        //     0x00, // bmaControls(1) - logical channel 1 features (volume for left and right channel is doable)
-        //     0x00, // bmaControls(2) - logical channel 2 features
-        //     0x00, // iFeature
-        // ];
+        let feature_unit = &[
+            0x06,            // bDescriptorSubtype - Feature unit
+            FEATURE_UNIT_ID, // bUnitID - unique identifier
+            0x12,            // bSourceID - ID of terminal associated with this feature unit
+            0x01, // bControlSize - bmaControls member size in bytes (size of one bmaControls map)
+            0x01 | 0x02, // bmaControls(0) - volume and mute (on master channel)
+            0x00, // bmaControls(1) - logical channel 1 features (volume for left and right channel is doable)
+            0x00, // bmaControls(2) - logical channel 2 features
+            0x00, // iFeature
+        ];
 
         // USB Play : Speaker Terminal
         // Output Terminal Descriptor
@@ -220,27 +234,27 @@ where
 
         // USB play Standard AS Interface Descriptor - Audio Streaming Zero Bandwith
         // Standard AS Interface Descriptor
-        // let standard_as_zero = &[
-        //     u8::from(self.play_data_if), // bInterfaceNumber
-        //     0x00,                        // bAlternateSetting
-        //     0x00,                        // bNumEndpoints
-        //     0x01,                        // bInterfaceClass
-        //     0x02,                        // bInterfaceSubClass
-        //     0x00,                        // bInterfaceProtocol
-        //     0x00,                        // iInterface
-        // ];
+        let standard_as_zero = &[
+            u8::from(self.play_data_if), // bInterfaceNumber
+            0x00,                        // bAlternateSetting
+            0x00,                        // bNumEndpoints
+            0x01,                        // bInterfaceClass
+            0x02,                        // bInterfaceSubClass
+            0x00,                        // bInterfaceProtocol
+            0x00,                        // iInterface
+        ];
 
         // USB play Standard AS Interface Descriptors - Audio streaming operational
         // Standard AS Interface Descriptor
-        // let standard_as_operational = &[
-        //     u8::from(self.play_data_if), // bInterfaceNumber
-        //     0x01,                        // bAlternateSetting
-        //     0x01,                        // bNumEndpoints
-        //     0x01,                        // bInterfaceClass
-        //     0x02,                        // bInterfaceSubClass
-        //     0x00,                        // bInterfaceProtocol
-        //     0x00,                        // iInterface
-        // ];
+        let standard_as_operational = &[
+            u8::from(self.play_data_if), // bInterfaceNumber
+            0x01,                        // bAlternateSetting
+            0x01,                        // bNumEndpoints
+            0x01,                        // bInterfaceClass
+            0x02,                        // bInterfaceSubClass
+            0x00,                        // bInterfaceProtocol
+            0x00,                        // iInterface
+        ];
 
         // Class-Specific AS Interface Descriptor
         let as_interface = &[
@@ -267,15 +281,24 @@ where
         // USB Play data ep
         // Standard AS Isochronous Audio Data Endpoint Descriptor
         // Although being standard descriptor, it's actually specific to UAC as it has two more fields (bRefresh, bSynchAddress)
-        // let isochronous_data_ep = &[
-        //     self.play_data_ep.address().index() as u8, // bEndpointAddress - OUT EP 1
-        //     0x01,                                      // bmAttributes - Isochronous
-        //     (MAX_PACKET_SIZE & 0xFF) as u8, // wMaxPacketSize  // Freq(Samples)*2(Stereo)*2(HalfWord)
-        //     ((MAX_PACKET_SIZE >> 8) & 0xFF) as u8,
-        //     0x01, // bInterval - must be set to 1
-        //     0x00, // bRefresh - must be reset to 0
-        //     0x00, // bSynchAddress - no synchronization endpoint used at the moment
-        // ];
+        let isochronous_data_ep = &[
+            self.play_data_ep.address().index() as u8, // bEndpointAddress - OUT EP 1
+            0x05,                                      // bmAttributes - Isochronous
+            (MAX_PACKET_SIZE & 0xFF) as u8, // wMaxPacketSize  // Freq(Samples)*2(Stereo)*2(HalfWord)
+            ((MAX_PACKET_SIZE >> 8) & 0xFF) as u8,
+            0x01, // bInterval - must be set to 1
+            0x0,  // bRefresh - must be reset to 0
+            129,  // bSynchAddress - no synchronization endpoint used at the moment
+        ];
+        let feedback_ep = &[
+            self.feedback_ep.address().index() as u8, // bEndpointAddress - OUT EP 1
+            0x01,                                     // bmAttributes - Isochronous
+            (3 & 0xFF) as u8, // wMaxPacketSize  // Freq(Samples)*2(Stereo)*2(HalfWord)
+            ((3 >> 8) & 0xFF) as u8,
+            0x01, // bInterval - must be set to 1
+            0x02, // bRefresh - must be reset to 0
+            0,    // bSynchAddress - no synchronization endpoint used at the moment
+        ];
 
         // Class-Specific AS Isochronous Audio Data Endpoint Descriptor
         let class_specific_iso_data_ep = &[
@@ -286,13 +309,21 @@ where
             0x00, // wLockDelay
         ];
 
-        let length = 9
-            + input_terminal.len()
-            + 2
-            // + feature_unit.len()
-            // + 2
-            + output_terminal.len()
-            + 2;
+        // let clock_source = &[
+        //     0x0A, /* bDescriptorSubType(0x0A): CLOCK_SOURCE */
+        //     0x10, /* bClockID(0x10): CLOCK_SOURCE_ID */
+        //     0x01, /* bmAttributes(0x01): internal fixed clock */
+        //     0x07, /* bmControls(0x07):
+        //           clock frequency control: 0b11 - host programmable;
+        //           clock validity control: 0b01 - host read only */
+        //     0x00, /* bAssocTerminal(0x00) */
+        //     0x01, /* iClockSource(0x01): Not requested */
+        // ];
+
+        let length =
+            9 + input_terminal.len() + 2 + feature_unit.len() + 2 + output_terminal.len() + 2;
+        // + clock_source.len()
+        // + 2;
 
         // info!("Length = {}", length);
 
@@ -309,17 +340,20 @@ where
 
         writer.write(0x24, interface_header)?;
         writer.write(0x24, input_terminal)?;
-        // writer.write(0x24, feature_unit)?;
+        writer.write(0x24, feature_unit)?;
         writer.write(0x24, output_terminal)?;
-        // writer.write(0x04, standard_as_zero)?;
+        // writer.write(0x24, clock_source)?;
         // writer.write(0x04, standard_as_operational)?;
+        // writer.write(0x04, standard_as_zero)?;
         writer.interface(self.play_data_if, 0x01, 0x02, 0x00, 0)?;
         writer.interface(self.play_data_if, 0x01, 0x02, 0x00, 1)?;
         writer.write(0x24, as_interface)?;
         writer.write(0x24, format)?;
+        writer.write(0x05, isochronous_data_ep)?;
         writer.endpoint(&self.play_data_ep)?;
-        // writer.write(0x05, isochronous_data_ep)?;
         writer.write(0x25, class_specific_iso_data_ep)?;
+        // writer.write(0x05, feedback_ep)?;
+        writer.fb_endpoint(&self.feedback_ep)?;
 
         // info!("Descriptors written");
 
@@ -350,7 +384,7 @@ where
 
     /// Called whenever the `UsbDevice` is polled.
     fn poll(&mut self) {
-        // info!("Poll");
+        // defmt::info!("Poll");
 
         // let mut buffer: [u8; MAX_PACKET_SIZE as usize] = [0; MAX_PACKET_SIZE as usize];
 
@@ -369,7 +403,7 @@ where
         //         }
         //     }
         //     Err(UsbError::WouldBlock) => (),
-        //     Err(_) => info!("playback data read error"),
+        //     Err(_) => (), //defmt::info!("playback data read error"),
         // }
     }
 
